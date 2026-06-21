@@ -1919,8 +1919,8 @@ const STYLES = `
 }
 
 @keyframes gr-cover-zoom {
-  0% { background-size: 100%; }
-  100% { background-size: 108%; }
+  0% { transform: scale(1); }
+  100% { transform: scale(1.08); }
 }
 
 .gr-cover-book::after {
