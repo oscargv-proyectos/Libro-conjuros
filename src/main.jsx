@@ -1,9 +1,9 @@
 import React from 'react';
 import ReactDOM from 'react-dom/client';
-import GrimorioApp from './App.jsx';
+import LibroDeConjurosApp from './App.jsx';
 
 ReactDOM.createRoot(document.getElementById('root')).render(
   <React.StrictMode>
-    <GrimorioApp />
+    <LibroDeConjurosApp />
   </React.StrictMode>
 );

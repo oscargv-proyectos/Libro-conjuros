@@ -42,6 +42,7 @@ function emptyCharState() {
     conocidos: {},   // nombre+nivel -> true
     preparados: {},  // id unico (con metamagia) -> {spellKey, dotesAplicadas:[nombreDote,...], vecesPreparado}
     dotesActivas: {}, // nombreDote -> modificadorActual (editable)
+    dotesTenidas: {}, // nombreDote -> true (el personaje tiene esta dote)
     customSpells: [],
     customFeats: [],
     spellOverrides: {}, // spellKey(nombre,nivelOriginal) -> campos editados (incluye nivel nuevo si cambia)
@@ -69,7 +70,7 @@ function allSchoolsOn() {
   return o;
 }
 
-export default function GrimorioApp() {
+export default function LibroDeConjurosApp() {
   const [coverOpen, setCoverOpen] = useState(true);
   const [allSpells, setAllSpells] = useState(() => CONJUROS_DATA);
   const [allFeats, setAllFeats] = useState(() => DOTES_DATA);
@@ -249,6 +250,18 @@ export default function GrimorioApp() {
     });
   }, []);
 
+  const toggleDoteTenida = useCallback((nombreDote) => {
+    setCharState(prev => {
+      const next = { ...prev, dotesTenidas: { ...prev.dotesTenidas } };
+      if (next.dotesTenidas[nombreDote]) {
+        delete next.dotesTenidas[nombreDote];
+      } else {
+        next.dotesTenidas[nombreDote] = true;
+      }
+      return next;
+    });
+  }, []);
+
   const openPrepareModal = useCallback((spell) => {
     setMetaModalSpell(spell);
     setSelectedMetamagic([]);
@@ -298,7 +311,7 @@ export default function GrimorioApp() {
       ...prev,
       customSpells: [...(prev.customSpells || []), spell],
     }));
-    showToast(`${spell.nombre} añadido al grimorio`);
+    showToast(`${spell.nombre} añadido a tu libro de conjuros`);
   }, [showToast]);
 
   const addCustomFeat = useCallback((feat) => {
@@ -350,7 +363,7 @@ export default function GrimorioApp() {
   if (!loaded) {
     return (
       <div style={{ background: '#0d0b08', color: '#c9952c', minHeight: '100vh', display: 'flex', alignItems: 'center', justifyContent: 'center', fontFamily: 'Georgia, serif' }}>
-        Abriendo el grimorio...
+        Abriendo el libro de conjuros...
       </div>
     );
   }
@@ -429,6 +442,8 @@ export default function GrimorioApp() {
             <DotesView
               combinedFeats={combinedFeats}
               dotesActivas={charState.dotesActivas}
+              dotesTenidas={charState.dotesTenidas}
+              toggleDoteTenida={toggleDoteTenida}
               updateFeatModifier={updateFeatModifier}
               addCustomFeat={addCustomFeat}
               updateFeat={updateFeat}
@@ -716,10 +731,12 @@ function PreparadosView({ levelsOn, setLevelsOn, levelCounts, knownSpellsForLeve
   );
 }
 
-function DotesView({ combinedFeats, dotesActivas, updateFeatModifier, addCustomFeat, updateFeat }) {
+function DotesView({ combinedFeats, dotesActivas, dotesTenidas, toggleDoteTenida, updateFeatModifier, addCustomFeat, updateFeat }) {
   const [showForm, setShowForm] = useState(false);
   const [editingFeat, setEditingFeat] = useState(null); // feat object being edited, or null = creating new
   const [form, setForm] = useState({ nombre: '', modificador_nivel: '1', libro: '', pagina: '', descripcion: '', mejorable: 'no' });
+  const [filterMode, setFilterMode] = useState('tenidas'); // 'tenidas' | 'todas'
+  const [search, setSearch] = useState('');
 
   const openCreate = () => {
     setEditingFeat(null);
@@ -727,7 +744,8 @@ function DotesView({ combinedFeats, dotesActivas, updateFeatModifier, addCustomF
     setShowForm(true);
   };
 
-  const openEdit = (feat) => {
+  const openEdit = (e, feat) => {
+    e.stopPropagation();
     setEditingFeat(feat);
     setForm({
       nombre: feat.nombre || '',
@@ -751,53 +769,93 @@ function DotesView({ combinedFeats, dotesActivas, updateFeatModifier, addCustomF
     setEditingFeat(null);
   };
 
+  const visibleFeats = combinedFeats.filter(f => {
+    if (filterMode === 'tenidas' && !dotesTenidas[f.nombre]) return false;
+    if (search.trim() && !f.nombre.toLowerCase().includes(search.trim().toLowerCase())) return false;
+    return true;
+  });
+
   return (
     <div className="gr-page">
       <div className="gr-catalog-head">
         <div>
           <h2 className="gr-page-title">Dotes de metamagia</h2>
-          <p className="gr-page-desc">El modificador de nivel es editable directamente. Pulsa «Editar» para cambiar nombre, descripción u origen, incluso en dotes oficiales.</p>
+          <p className="gr-page-desc">Pulsa una tarjeta para marcarla como tenida. El modificador de nivel es editable directamente, y «Editar» cambia cualquier otro dato, incluso en dotes oficiales.</p>
         </div>
         <button className="gr-btn-fab" onClick={openCreate} title="Añadir dote nueva">+</button>
       </div>
 
+      <div className="gr-toolbar">
+        <input
+          className="gr-input"
+          placeholder="Buscar dote por nombre..."
+          value={search}
+          onChange={e => setSearch(e.target.value)}
+        />
+        <div className="gr-sort-toggle">
+          <button className={filterMode === 'tenidas' ? 'active' : ''} onClick={() => setFilterMode('tenidas')}>Tenidas</button>
+          <button className={filterMode === 'todas' ? 'active' : ''} onClick={() => setFilterMode('todas')}>Todas</button>
+        </div>
+      </div>
+
       <div className="gr-feats-grid">
-        {combinedFeats.map(f => (
-          <div key={f._origNombre || f.nombre} className="gr-feat-card">
-            <div className="gr-feat-card-head">
-              <h3>{f.nombre}</h3>
-              <div className="gr-feat-mod-edit">
-                <span>Nv.</span>
-                <input
-                  type="text"
-                  className="gr-feat-mod-input"
-                  value={dotesActivas[f.nombre] ?? f.modificador_nivel}
-                  onChange={e => updateFeatModifier(f.nombre, e.target.value)}
-                />
-              </div>
-            </div>
-            <p className="gr-feat-desc">{f.descripcion}</p>
-            <div className="gr-spell-meta">
-              <span>{f.libro}{f.pagina && f.pagina !== '-' ? `, pág. ${f.pagina}` : ''}</span>
-            </div>
-            <button className="gr-btn-prepare small gr-btn-edit" onClick={() => openEdit(f)}>Editar</button>
+        {visibleFeats.length === 0 && (
+          <div className="gr-empty">
+            {filterMode === 'tenidas' ? 'No tienes ninguna dote marcada todavía.' : 'No hay dotes con estos filtros.'}
           </div>
-        ))}
+        )}
+        {visibleFeats.map(f => {
+          const isTenida = !!dotesTenidas[f.nombre];
+          return (
+            <div
+              key={f._origNombre || f.nombre}
+              className={'gr-feat-card clickable' + (isTenida ? ' known' : '')}
+              onClick={() => toggleDoteTenida(f.nombre)}
+              role="button"
+              tabIndex={0}
+              onKeyDown={e => { if (e.key === 'Enter' || e.key === ' ') toggleDoteTenida(f.nombre); }}
+            >
+              <div className="gr-feat-card-head">
+                <h3>{f.nombre}</h3>
+                <div className="gr-feat-mod-edit" onClick={e => e.stopPropagation()}>
+                  <span>Nv.</span>
+                  <input
+                    type="text"
+                    className="gr-feat-mod-input"
+                    value={dotesActivas[f.nombre] ?? f.modificador_nivel}
+                    onChange={e => updateFeatModifier(f.nombre, e.target.value)}
+                  />
+                </div>
+              </div>
+              <p className="gr-feat-desc">{f.descripcion}</p>
+              <div className="gr-spell-meta">
+                <span>{f.libro}{f.pagina && f.pagina !== '-' ? `, pág. ${f.pagina}` : ''}</span>
+              </div>
+              <div className={'gr-known-pill' + (isTenida ? ' on' : '')}>
+                {isTenida ? '✓ Tenida' : 'Pulsa para marcar tenida'}
+              </div>
+              <button className="gr-btn-prepare small gr-btn-edit" onClick={e => openEdit(e, f)}>Editar</button>
+            </div>
+          );
+        })}
       </div>
 
       {showForm && (
-        <div className="gr-add-form">
-          <h3 className="gr-mini-title">{editingFeat ? 'Editar dote de metamagia' : 'Nueva dote de metamagia'}</h3>
-          <div className="gr-form-grid">
-            <input className="gr-input" placeholder="Nombre" value={form.nombre} onChange={e => setForm({ ...form, nombre: e.target.value })} />
-            <input className="gr-input" placeholder="Modificador de nivel (ej. 2)" value={form.modificador_nivel} onChange={e => setForm({ ...form, modificador_nivel: e.target.value })} />
-            <input className="gr-input" placeholder="Libro de origen" value={form.libro} onChange={e => setForm({ ...form, libro: e.target.value })} />
-            <input className="gr-input" placeholder="Página" value={form.pagina} onChange={e => setForm({ ...form, pagina: e.target.value })} />
-          </div>
-          <textarea className="gr-textarea" placeholder="Descripción / beneficio" value={form.descripcion} onChange={e => setForm({ ...form, descripcion: e.target.value })} />
-          <div className="gr-form-actions">
-            <button className="gr-btn-prepare" onClick={submit}>{editingFeat ? 'Guardar cambios' : 'Guardar dote'}</button>
-            <button className="gr-btn-remove" onClick={() => { setShowForm(false); setEditingFeat(null); }}>Cancelar</button>
+        <div className="gr-modal-overlay" onClick={() => setShowForm(false)}>
+          <div className="gr-modal" onClick={e => e.stopPropagation()}>
+            <h3>{editingFeat ? 'Editar dote de metamagia' : 'Nueva dote de metamagia'}</h3>
+            <p className="gr-modal-sub">{editingFeat ? 'Los cambios se guardan solo en tu libro de conjuros.' : 'Se añadirá a tus dotes de metamagia.'}</p>
+            <div className="gr-form-grid">
+              <input className="gr-input" placeholder="Nombre" value={form.nombre} onChange={e => setForm({ ...form, nombre: e.target.value })} />
+              <input className="gr-input" placeholder="Modificador de nivel (ej. 2)" value={form.modificador_nivel} onChange={e => setForm({ ...form, modificador_nivel: e.target.value })} />
+              <input className="gr-input" placeholder="Libro de origen" value={form.libro} onChange={e => setForm({ ...form, libro: e.target.value })} />
+              <input className="gr-input" placeholder="Página" value={form.pagina} onChange={e => setForm({ ...form, pagina: e.target.value })} />
+            </div>
+            <textarea className="gr-textarea" placeholder="Descripción / beneficio" value={form.descripcion} onChange={e => setForm({ ...form, descripcion: e.target.value })} />
+            <div className="gr-form-actions">
+              <button className="gr-btn-prepare" onClick={submit}>{editingFeat ? 'Guardar cambios' : 'Guardar dote'}</button>
+              <button className="gr-btn-remove" onClick={() => { setShowForm(false); setEditingFeat(null); }}>Cancelar</button>
+            </div>
           </div>
         </div>
       )}
@@ -915,7 +973,7 @@ function CatalogoView({
         <div className="gr-modal-overlay" onClick={() => setShowForm(false)}>
           <div className="gr-modal" onClick={e => e.stopPropagation()}>
             <h3>{editingSpell ? 'Editar conjuro' : 'Nuevo conjuro'}</h3>
-            <p className="gr-modal-sub">{editingSpell ? 'Los cambios se guardan solo en tu grimorio.' : 'Se añadirá al catálogo en su sitio correspondiente por nivel.'}</p>
+            <p className="gr-modal-sub">{editingSpell ? 'Los cambios se guardan solo en tu libro de conjuros.' : 'Se añadirá al catálogo en su sitio correspondiente por nivel.'}</p>
             <div className="gr-form-grid">
               <input className="gr-input" placeholder="Nombre del conjuro" value={form.nombre} onChange={e => setForm({ ...form, nombre: e.target.value })} />
               <select className="gr-select" value={form.nivel} onChange={e => setForm({ ...form, nivel: e.target.value })}>
@@ -929,7 +987,7 @@ function CatalogoView({
             </div>
             <textarea className="gr-textarea" placeholder="Resumen / efecto del conjuro" value={form.resumen} onChange={e => setForm({ ...form, resumen: e.target.value })} />
             <div className="gr-form-actions">
-              <button className="gr-btn-prepare" onClick={submit}>{editingSpell ? 'Guardar cambios' : 'Añadir al grimorio'}</button>
+              <button className="gr-btn-prepare" onClick={submit}>{editingSpell ? 'Guardar cambios' : 'Añadir al libro de conjuros'}</button>
               <button className="gr-btn-remove" onClick={() => { setShowForm(false); setEditingSpell(null); }}>Cancelar</button>
             </div>
           </div>
@@ -1604,6 +1662,23 @@ const STYLES = `
   border: none;
   border-bottom: 1px solid rgba(120,80,30,0.25);
   padding: 14px 4px 16px;
+}
+
+.gr-feat-card.clickable {
+  cursor: pointer;
+}
+
+.gr-feat-card.clickable:hover {
+  border-bottom-color: #d2691e;
+}
+
+.gr-feat-card.clickable:focus-visible {
+  outline: 1px dotted #d2691e;
+  outline-offset: 2px;
+}
+
+.gr-feat-card.known {
+  border-bottom-color: rgba(160,90,20,0.5);
 }
 
 .gr-feat-card-head {

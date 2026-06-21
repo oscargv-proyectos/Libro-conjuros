@@ -1,4 +1,4 @@
-# Grimorio Arcano
+# Libro de conjuros
 
 App de gestión de conjuros para D&D 3.5 (Mago / Hechicero), pensada para usar durante las sesiones de mesa desde el móvil.
 

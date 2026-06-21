@@ -1,11 +1,11 @@
 {
-  "name": "Grimorio Arcano",
-  "short_name": "Grimorio",
+  "name": "Libro de conjuros",
+  "short_name": "Libro de conjuros",
   "description": "Gestión de conjuros para D&D 3.5 (Mago / Hechicero)",
   "start_url": "/",
   "display": "standalone",
-  "background_color": "#1a1812",
-  "theme_color": "#3a2a10",
+  "background_color": "#0d0b08",
+  "theme_color": "#0d0b08",
   "icons": [
     {
       "src": "/logo-192.png",
