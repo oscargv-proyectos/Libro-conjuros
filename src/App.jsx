@@ -360,14 +360,6 @@ export default function LibroDeConjurosApp() {
     showToast(`${fields.nombre || feat.nombre} actualizada`);
   }, [showToast]);
 
-  if (!loaded) {
-    return (
-      <div style={{ background: '#0d0b08', color: '#c9952c', minHeight: '100vh', display: 'flex', alignItems: 'center', justifyContent: 'center', fontFamily: 'Georgia, serif' }}>
-        Abriendo el libro de conjuros...
-      </div>
-    );
-  }
-
   if (coverOpen) {
     return <CoverScreen onOpen={() => setCoverOpen(false)} />;
   }
