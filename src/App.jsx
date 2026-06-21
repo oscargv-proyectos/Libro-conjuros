@@ -470,6 +470,7 @@ export default function LibroDeConjurosApp() {
           spell={metaModalSpell}
           feats={combinedFeats}
           dotesActivas={charState.dotesActivas}
+          dotesTenidas={charState.dotesTenidas}
           selected={selectedMetamagic}
           onToggle={toggleMetamagic}
           onConfirm={confirmPrepare}
@@ -1058,8 +1059,8 @@ function SwipeArea({ children, onSwipe, tabIndex, totalTabs }) {
 }
 
 
-function MetamagicModal({ spell, feats, dotesActivas, selected, onToggle, onConfirm, onClose }) {
-  const metaFeats = feats.filter(f => f.modificador_nivel !== undefined);
+function MetamagicModal({ spell, feats, dotesActivas, dotesTenidas, selected, onToggle, onConfirm, onClose }) {
+  const metaFeats = feats.filter(f => f.modificador_nivel !== undefined && dotesTenidas && dotesTenidas[f.nombre]);
   const totalMod = selected.reduce((sum, fname) => {
     const f = feats.find(ft => ft.nombre === fname);
     if (!f) return sum;
@@ -1074,15 +1075,16 @@ function MetamagicModal({ spell, feats, dotesActivas, selected, onToggle, onConf
         <h3>Preparar «{spell.nombre}»</h3>
         <p className="gr-modal-sub">Nivel base {spell.nivel}. Selecciona dotes de metamagia a aplicar (opcional).</p>
         <div className="gr-modal-feats">
-          {metaFeats.length === 0 && <div className="gr-empty">No tienes dotes de metamagia registradas.</div>}
+          {metaFeats.length === 0 && <div className="gr-empty">No tienes ninguna dote de metamagia marcada como tenida. Ve a «Dotes de metamagia» y márcalas.</div>}
           {metaFeats.map(f => {
             const active = selected.includes(f.nombre);
-            const modVal = dotesActivas[f.nombre] ?? f.modificador_nivel;
+            const modVal = parseInt(dotesActivas[f.nombre] ?? f.modificador_nivel, 10);
+            const modDisplay = isNaN(modVal) ? (dotesActivas[f.nombre] ?? f.modificador_nivel) : (modVal >= 0 ? `+${modVal}` : `${modVal}`);
             return (
               <label key={f.nombre} className={'gr-modal-feat-row' + (active ? ' active' : '')}>
                 <input type="checkbox" checked={active} onChange={() => onToggle(f.nombre)} />
                 <span className="gr-modal-feat-name">{f.nombre}</span>
-                <span className="gr-modal-feat-mod">+{modVal}</span>
+                <span className="gr-modal-feat-mod">{modDisplay}</span>
               </label>
             );
           })}
@@ -1090,6 +1092,7 @@ function MetamagicModal({ spell, feats, dotesActivas, selected, onToggle, onConf
         <div className="gr-modal-result">
           Espacio final ocupado: <strong>Nivel {effLevel}</strong>
           {effLevel > 9 && <span className="gr-warn"> — supera el nivel 9, revisa la combinación</span>}
+          {effLevel < 0 && <span className="gr-warn"> — el nivel no puede ser negativo, revisa la combinación</span>}
         </div>
         <div className="gr-form-actions">
           <button className="gr-btn-prepare" onClick={onConfirm}>Confirmar preparación</button>
