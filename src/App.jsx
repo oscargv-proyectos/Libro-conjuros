@@ -34,15 +34,29 @@ function clasesArray(c) {
   return c.split(',').map(s => s.trim()).filter(Boolean);
 }
 
-const STORAGE_KEY = 'grimorio:personaje:default';
+const CHAR_INDEX_KEY = 'grimorio:personajes:index';
 
-function emptyCharState() {
+function charStorageKey(id) {
+  return 'grimorio:personaje:' + id;
+}
+
+function makeCharId() {
+  return 'char_' + Date.now().toString(36) + '_' + Math.random().toString(36).slice(2, 7);
+}
+
+function emptyCharState(id) {
   return {
+    id: id || makeCharId(),
     nombre: 'Jugador',
+    clase: 'Mago',
+    cdConjuros: '',
+    nivelLanzador: '',
     conocidos: {},   // nombre+nivel -> true
     preparados: {},  // id unico (con metamagia) -> {spellKey, dotesAplicadas:[nombreDote,...], vecesPreparado}
     dotesActivas: {}, // nombreDote -> modificadorActual (editable)
     dotesTenidas: {}, // nombreDote -> true (el personaje tiene esta dote)
+    limitesPreparados: {}, // nivel (0-9) -> numero maximo de conjuros preparados de ese nivel efectivo (undefined/null = sin limite)
+    ocultosPreparados: {}, // id de preparado -> true (oculto temporalmente, no eliminado; se restablece con resetAllPrepared)
     customSpells: [],
     customFeats: [],
     spellOverrides: {}, // spellKey(nombre,nivelOriginal) -> campos editados (incluye nivel nuevo si cambia)
@@ -57,6 +71,7 @@ function spellKey(nombre, nivel) {
 const TABS = ['conocidos', 'preparados', 'dotes', 'catalogo'];
 const ALL_LEVELS = Array.from({ length: 10 }, (_, i) => i);
 const ALL_SCHOOLS = ['Abjuración', 'Adivinación', 'Conjuración', 'Encantamiento', 'Evocación', 'Ilusión', 'Nigromancia', 'Transmutación', 'Universal'];
+const ALL_CLASSES = ['Mago', 'Hechicero', 'Bardo', 'Clérigo', 'Druida', 'Explorador', 'Paladín'];
 
 function allLevelsOn() {
   const o = {};
@@ -74,13 +89,13 @@ export default function LibroDeConjurosApp() {
   const [coverOpen, setCoverOpen] = useState(true);
   const [allSpells, setAllSpells] = useState(() => CONJUROS_DATA);
   const [allFeats, setAllFeats] = useState(() => DOTES_DATA);
-  const [charState, setCharState] = useState(emptyCharState());
+  const [charState, setCharState] = useState(() => emptyCharState());
+  const [charList, setCharList] = useState([]); // [{id, nombre, clase}, ...]
   const [loaded, setLoaded] = useState(false);
   const [view, setView] = useState('preparados'); // 'conocidos' | 'preparados' | 'dotes' | 'catalogo'
   const [activeLevel, setActiveLevel] = useState(0);
   const [knownLevelsOn, setKnownLevelsOn] = useState(allLevelsOn);
   const [knownSchoolsOn, setKnownSchoolsOn] = useState(allSchoolsOn);
-  const [preparedLevelsOn, setPreparedLevelsOn] = useState(allLevelsOn);
   const [catLevelsOn, setCatLevelsOn] = useState(allLevelsOn);
   const [catSchoolsOn, setCatSchoolsOn] = useState(allSchoolsOn);
   const [sortBy, setSortBy] = useState('nivel'); // 'nivel' | 'nombre'
@@ -91,32 +106,103 @@ export default function LibroDeConjurosApp() {
   const [selectedMetamagic, setSelectedMetamagic] = useState([]);
   const [toast, setToast] = useState(null);
 
-  // Cargar estado guardado
+  // Releer la lista de personajes (id + nombre + clase) desde localStorage
+  const refreshCharList = useCallback((activeId) => {
+    try {
+      const raw = localStorage.getItem(CHAR_INDEX_KEY);
+      const idx = raw ? JSON.parse(raw) : { ids: [] };
+      const list = (idx.ids || []).map(id => {
+        try {
+          const cRaw = localStorage.getItem(charStorageKey(id));
+          const c = cRaw ? JSON.parse(cRaw) : null;
+          return { id, nombre: c?.nombre || 'Jugador', clase: c?.clase || 'Mago' };
+        } catch (e) {
+          return { id, nombre: 'Jugador', clase: 'Mago' };
+        }
+      });
+      setCharList(list);
+    } catch (e) {
+      // nada que listar
+    }
+  }, []);
+
+  // Cargar estado guardado (indice de personajes + personaje activo)
   useEffect(() => {
     try {
-      const raw = localStorage.getItem(STORAGE_KEY);
-      if (raw) {
-        const parsed = JSON.parse(raw);
-        setCharState({ ...emptyCharState(), ...parsed });
+      const raw = localStorage.getItem(CHAR_INDEX_KEY);
+      let idx = raw ? JSON.parse(raw) : null;
+
+      if (!idx || !idx.ids || idx.ids.length === 0) {
+        // Primera vez: migrar personaje antiguo (clave fija anterior) si existe, o crear uno nuevo
+        const legacyRaw = localStorage.getItem('grimorio:personaje:default');
+        let initial;
+        if (legacyRaw) {
+          const legacyParsed = JSON.parse(legacyRaw);
+          initial = { ...emptyCharState(), ...legacyParsed };
+        } else {
+          initial = emptyCharState();
+        }
+        idx = { activeId: initial.id, ids: [initial.id] };
+        localStorage.setItem(charStorageKey(initial.id), JSON.stringify(initial));
+        localStorage.setItem(CHAR_INDEX_KEY, JSON.stringify(idx));
+        setCharState(initial);
+      } else {
+        const activeId = idx.ids.includes(idx.activeId) ? idx.activeId : idx.ids[0];
+        const cRaw = localStorage.getItem(charStorageKey(activeId));
+        const parsed = cRaw ? JSON.parse(cRaw) : emptyCharState(activeId);
+        setCharState({ ...emptyCharState(activeId), ...parsed });
       }
+      refreshCharList(idx.activeId);
     } catch (e) {
       // no existe aun, usar estado vacio
     }
     setLoaded(true);
-  }, []);
+  }, [refreshCharList]);
 
-  // Guardar estado (debounced simple)
+  // Guardar estado del personaje activo (debounced simple)
   useEffect(() => {
     if (!loaded) return;
     const t = setTimeout(() => {
       try {
-        localStorage.setItem(STORAGE_KEY, JSON.stringify(charState));
+        localStorage.setItem(charStorageKey(charState.id), JSON.stringify(charState));
+        refreshCharList(charState.id);
       } catch (e) {
         console.error('Error guardando', e);
       }
     }, 400);
     return () => clearTimeout(t);
-  }, [charState, loaded]);
+  }, [charState, loaded, refreshCharList]);
+
+  const switchCharacter = useCallback((id) => {
+    try {
+      const cRaw = localStorage.getItem(charStorageKey(id));
+      const parsed = cRaw ? JSON.parse(cRaw) : emptyCharState(id);
+      setCharState({ ...emptyCharState(id), ...parsed });
+      const raw = localStorage.getItem(CHAR_INDEX_KEY);
+      const idx = raw ? JSON.parse(raw) : { ids: [id] };
+      idx.activeId = id;
+      if (!idx.ids.includes(id)) idx.ids.push(id);
+      localStorage.setItem(CHAR_INDEX_KEY, JSON.stringify(idx));
+    } catch (e) {
+      console.error('Error cambiando de personaje', e);
+    }
+  }, []);
+
+  const createCharacter = useCallback(() => {
+    const fresh = emptyCharState();
+    try {
+      localStorage.setItem(charStorageKey(fresh.id), JSON.stringify(fresh));
+      const raw = localStorage.getItem(CHAR_INDEX_KEY);
+      const idx = raw ? JSON.parse(raw) : { ids: [] };
+      idx.ids.push(fresh.id);
+      idx.activeId = fresh.id;
+      localStorage.setItem(CHAR_INDEX_KEY, JSON.stringify(idx));
+    } catch (e) {
+      console.error('Error creando personaje', e);
+    }
+    setCharState(fresh);
+    refreshCharList(fresh.id);
+  }, [refreshCharList]);
 
   const showToast = useCallback((msg) => {
     setToast(msg);
@@ -190,13 +276,6 @@ export default function LibroDeConjurosApp() {
     return list;
   }, [combinedSpells, catSearch, catSortBy, catLevelsOn, catSchoolsOn]);
 
-  const knownSpellsForPreparedLevels = useMemo(() => {
-    return combinedSpells
-      .filter(c => preparedLevelsOn[c.nivel] !== false && charState.conocidos[spellKey(c.nombre, c.nivel)])
-      .sort((a, b) => (a.nivel - b.nivel) || a.nombre.localeCompare(b.nombre, 'es'));
-  }, [combinedSpells, preparedLevelsOn, charState.conocidos]);
-
-
   const levelCounts = useMemo(() => {
     const counts = {};
     for (let i = 0; i <= 9; i++) counts[i] = 0;
@@ -232,9 +311,31 @@ export default function LibroDeConjurosApp() {
     return grouped;
   }, [preparedList, combinedFeats, charState.dotesActivas]);
 
+  const visiblePreparedByEffectiveLevel = useMemo(() => {
+    const ocultos = charState.ocultosPreparados || {};
+    const grouped = {};
+    Object.entries(preparedByEffectiveLevel).forEach(([lvl, list]) => {
+      const visibles = list.filter(p => !ocultos[p.id]);
+      if (visibles.length > 0) grouped[lvl] = visibles;
+    });
+    return grouped;
+  }, [preparedByEffectiveLevel, charState.ocultosPreparados]);
+
   // ---- Acciones ----
   const updateNombre = useCallback((nuevoNombre) => {
     setCharState(prev => ({ ...prev, nombre: nuevoNombre || 'Jugador' }));
+  }, []);
+
+  const updateClase = useCallback((nuevaClase) => {
+    setCharState(prev => ({ ...prev, clase: nuevaClase || 'Mago' }));
+  }, []);
+
+  const updateCdConjuros = useCallback((valor) => {
+    setCharState(prev => ({ ...prev, cdConjuros: valor }));
+  }, []);
+
+  const updateNivelLanzador = useCallback((valor) => {
+    setCharState(prev => ({ ...prev, nivelLanzador: valor }));
   }, []);
 
   const toggleConocido = useCallback((spell) => {
@@ -269,6 +370,22 @@ export default function LibroDeConjurosApp() {
 
   const confirmPrepare = useCallback(() => {
     if (!metaModalSpell) return;
+    const mod = selectedMetamagic.reduce((sum, fname) => {
+      const f = combinedFeats.find(ft => ft.nombre === fname);
+      if (!f) return sum;
+      const v = parseInt(charState.dotesActivas[fname] ?? f.modificador_nivel, 10);
+      return sum + (isNaN(v) ? 0 : v);
+    }, 0);
+    const effLevel = metaModalSpell.nivel + mod;
+    const limite = charState.limitesPreparados ? charState.limitesPreparados[effLevel] : null;
+    if (limite !== undefined && limite !== null && limite !== '') {
+      const limiteNum = parseInt(limite, 10);
+      const yaPreparados = (preparedByEffectiveLevel[effLevel] || []).length;
+      if (!isNaN(limiteNum) && yaPreparados >= limiteNum) {
+        showToast(`No hay espacios libres de nivel ${effLevel} (límite: ${limiteNum})`);
+        return;
+      }
+    }
     const id = metaModalSpell.nombre + '_' + Date.now() + '_' + Math.random().toString(36).slice(2, 6);
     setCharState(prev => ({
       ...prev,
@@ -283,14 +400,34 @@ export default function LibroDeConjurosApp() {
     showToast(`${metaModalSpell.nombre} preparado`);
     setMetaModalSpell(null);
     setSelectedMetamagic([]);
-  }, [metaModalSpell, selectedMetamagic, showToast]);
+  }, [metaModalSpell, selectedMetamagic, showToast, combinedFeats, charState.dotesActivas, charState.limitesPreparados, preparedByEffectiveLevel]);
 
   const removePrepared = useCallback((id) => {
+    setCharState(prev => ({
+      ...prev,
+      ocultosPreparados: { ...prev.ocultosPreparados, [id]: true },
+    }));
+  }, []);
+
+  const deletePrepared = useCallback((id) => {
     setCharState(prev => {
-      const next = { ...prev, preparados: { ...prev.preparados } };
+      const next = { ...prev, preparados: { ...prev.preparados }, ocultosPreparados: { ...prev.ocultosPreparados } };
       delete next.preparados[id];
+      delete next.ocultosPreparados[id];
       return next;
     });
+  }, []);
+
+  const resetAllPrepared = useCallback(() => {
+    setCharState(prev => ({ ...prev, ocultosPreparados: {} }));
+    showToast('Todos los conjuros preparados vuelven a mostrarse');
+  }, [showToast]);
+
+  const updateLimitePreparado = useCallback((nivel, value) => {
+    setCharState(prev => ({
+      ...prev,
+      limitesPreparados: { ...prev.limitesPreparados, [nivel]: value },
+    }));
   }, []);
 
   const toggleMetamagic = useCallback((featName) => {
@@ -376,7 +513,22 @@ export default function LibroDeConjurosApp() {
       <div className="grimoire-bg" />
       <header className="gr-header">
         <div className="gr-header-inner">
-          <EditableSubtitle nombre={charState.nombre} onChange={updateNombre} />
+          <CharacterHeader
+            nombre={charState.nombre}
+            onChangeNombre={updateNombre}
+            clase={charState.clase}
+            onChangeClase={updateClase}
+            cdConjuros={charState.cdConjuros}
+            onChangeCd={updateCdConjuros}
+            nivelLanzador={charState.nivelLanzador}
+            onChangeNivelLanzador={updateNivelLanzador}
+            charList={charList}
+            activeId={charState.id}
+            onSwitchCharacter={switchCharacter}
+            onCreateCharacter={createCharacter}
+            limitesPreparados={charState.limitesPreparados}
+            updateLimitePreparado={updateLimitePreparado}
+          />
         </div>
         <nav className="gr-tabs">
           {[
@@ -419,14 +571,12 @@ export default function LibroDeConjurosApp() {
 
           {view === 'preparados' && (
             <PreparadosView
-              levelsOn={preparedLevelsOn}
-              setLevelsOn={setPreparedLevelsOn}
-              levelCounts={levelCounts}
-              knownSpellsForLevels={knownSpellsForPreparedLevels}
-              openPrepareModal={openPrepareModal}
               preparedByEffectiveLevel={preparedByEffectiveLevel}
+              visiblePreparedByEffectiveLevel={visiblePreparedByEffectiveLevel}
               removePrepared={removePrepared}
-              combinedFeats={combinedFeats}
+              deletePrepared={deletePrepared}
+              resetAllPrepared={resetAllPrepared}
+              limitesPreparados={charState.limitesPreparados}
             />
           )}
 
@@ -483,55 +633,165 @@ export default function LibroDeConjurosApp() {
   );
 }
 
-function EditableSubtitle({ nombre, onChange }) {
-  const [editing, setEditing] = useState(false);
-  const [draft, setDraft] = useState(nombre);
-  const inputRef = React.useRef(null);
+function CharacterHeader({
+  nombre, onChangeNombre, clase, onChangeClase,
+  cdConjuros, onChangeCd, nivelLanzador, onChangeNivelLanzador,
+  charList, activeId, onSwitchCharacter, onCreateCharacter,
+  limitesPreparados, updateLimitePreparado,
+}) {
+  const [showSheet, setShowSheet] = useState(false);
 
-  useEffect(() => {
-    if (editing && inputRef.current) {
-      inputRef.current.focus();
-      inputRef.current.select();
+  const handleCharSelect = (e) => {
+    const val = e.target.value;
+    if (val === '__new__') {
+      onCreateCharacter();
+    } else {
+      onSwitchCharacter(val);
     }
-  }, [editing]);
-
-  const startEdit = () => {
-    setDraft(nombre);
-    setEditing(true);
   };
 
-  const commit = () => {
-    onChange(draft.trim());
-    setEditing(false);
-  };
-
-  if (editing) {
-    return (
-      <input
-        ref={inputRef}
-        className="gr-sub-input"
-        value={draft}
-        onChange={e => setDraft(e.target.value)}
-        onBlur={commit}
-        onKeyDown={e => {
-          if (e.key === 'Enter') commit();
-          if (e.key === 'Escape') setEditing(false);
-        }}
-      />
-    );
-  }
+  const sinDatos = !cdConjuros && !nivelLanzador;
 
   return (
-    <p className="gr-sub gr-sub-editable" onClick={startEdit} title="Tocar para editar">
-      Conjuros de {nombre} · D&amp;D 3.5
-    </p>
+    <div className="gr-sub-block">
+      {charList && charList.length > 1 && (
+        <select className="gr-char-select" value={activeId} onChange={handleCharSelect} title="Cambiar de personaje">
+          {charList.map(c => (
+            <option key={c.id} value={c.id}>{c.nombre} ({c.clase})</option>
+          ))}
+          <option value="__new__">+ Nuevo personaje</option>
+        </select>
+      )}
+      {charList && charList.length <= 1 && (
+        <button className="gr-new-char-link" onClick={onCreateCharacter} title="Crear otro personaje">
+          + Nuevo personaje
+        </button>
+      )}
+      <p className="gr-sub">
+        <button
+          className={'gr-emblem-btn' + (sinDatos ? ' unset' : '')}
+          onClick={() => setShowSheet(true)}
+          title="Datos del personaje que afectan a los conjuros"
+        >
+          <svg width="20" height="20" viewBox="0 0 100 100" xmlns="http://www.w3.org/2000/svg">
+            <circle cx="50" cy="50" r="47" fill="none" stroke="currentColor" strokeWidth="1.3" opacity="0.8"/>
+            <circle cx="50" cy="50" r="41" fill="none" stroke="currentColor" strokeWidth="0.7" opacity="0.55"/>
+            <g stroke="#a060d0" strokeWidth="1" fill="none" opacity="0.9" strokeLinecap="round">
+              <path d="M30,11 L30,17 M27,14 L33,14"/>
+              <path d="M70,11 L70,17 M67,13 L73,15 M67,15 L73,13"/>
+              <path d="M89,30 L83,30 M86,27 L86,33"/>
+              <path d="M89,70 L83,70 M83,67 L89,73"/>
+              <path d="M70,89 L70,83 M67,86 L73,86"/>
+              <path d="M30,89 L30,83 M27,84 L33,88 M27,88 L33,84"/>
+              <path d="M11,70 L17,70 M14,67 L14,73"/>
+              <path d="M11,30 L17,30 M11,27 L17,33 M11,33 L17,27"/>
+            </g>
+            <g fill="currentColor">
+              <path d="M50,3 L53,9 L50,15 L47,9 Z"/>
+              <path d="M50,97 L53,91 L50,85 L47,91 Z"/>
+              <path d="M3,50 L9,53 L15,50 L9,47 Z"/>
+              <path d="M97,50 L91,53 L85,50 L91,47 Z"/>
+            </g>
+            <circle cx="50" cy="9" r="2" fill="#b070e0"/>
+            <circle cx="50" cy="91" r="2" fill="#b070e0"/>
+            <circle cx="9" cy="50" r="2" fill="#b070e0"/>
+            <circle cx="91" cy="50" r="2" fill="#b070e0"/>
+            <circle cx="50" cy="50" r="29" fill="#0e0a16" stroke="#c9952c" strokeWidth="2.2"/>
+            <circle cx="50" cy="50" r="25" fill="none" stroke="#8a5a1a" strokeWidth="0.8"/>
+            <path d="M50,30 C42,30 36,36 35,44 L33,60 C33,62 35,63 37,62 C41,59 45,57 50,57 C55,57 59,59 63,62 C65,63 67,62 67,60 L65,44 C64,36 58,30 50,30 Z" fill="#d4af6a"/>
+            <path d="M50,30 L50,24" stroke="#d4af6a" strokeWidth="2" strokeLinecap="round"/>
+            <ellipse cx="50" cy="46" rx="9" ry="12" fill="#0e0a16"/>
+            <circle cx="46" cy="45" r="0.9" fill="#a060d0" opacity="0.7"/>
+            <circle cx="54" cy="45" r="0.9" fill="#a060d0" opacity="0.7"/>
+            <g fill="#c9952c">
+              <path d="M50,66 C47,66 45,64 45,61 C47,62 49,63 50,66 Z"/>
+              <path d="M50,66 C53,66 55,64 55,61 C53,62 51,63 50,66 Z"/>
+              <path d="M50,62 C49,60 49,58 50,56 C51,58 51,60 50,62 Z"/>
+            </g>
+            <path d="M50,66 L50,73" stroke="#c9952c" strokeWidth="1" fill="none"/>
+          </svg>
+        </button>
+        {' '}Conjuros de {nombre} · {clase}
+      </p>
+
+      {showSheet && (
+        <div className="gr-modal-overlay" onClick={() => setShowSheet(false)}>
+          <div className="gr-modal" onClick={e => e.stopPropagation()}>
+            <h3>Datos del personaje</h3>
+
+            <div className="gr-sheet-grid gr-sheet-grid-2">
+              <label className="gr-sheet-field">
+                <span>Nombre</span>
+                <input
+                  type="text"
+                  className="gr-input"
+                  value={nombre}
+                  onChange={e => onChangeNombre(e.target.value)}
+                />
+              </label>
+              <label className="gr-sheet-field">
+                <span>Clase</span>
+                <select className="gr-select" value={clase} onChange={e => onChangeClase(e.target.value)}>
+                  {ALL_CLASSES.map(c => <option key={c} value={c}>{c}</option>)}
+                </select>
+              </label>
+            </div>
+
+            <div className="gr-sheet-grid gr-sheet-grid-2">
+              <label className="gr-sheet-field">
+                <span>Nivel de lanzador</span>
+                <input
+                  type="text"
+                  inputMode="numeric"
+                  className="gr-input"
+                  placeholder="0"
+                  value={nivelLanzador}
+                  onChange={e => onChangeNivelLanzador(e.target.value)}
+                />
+              </label>
+              <label className="gr-sheet-field">
+                <span>CD de tus conjuros</span>
+                <input
+                  type="text"
+                  className="gr-input"
+                  placeholder="0"
+                  value={cdConjuros}
+                  onChange={e => onChangeCd(e.target.value)}
+                />
+              </label>
+            </div>
+
+            <h3 className="gr-mini-title" style={{ marginTop: '14px' }}>Límites de preparación</h3>
+            <p className="gr-modal-sub">Número máximo de conjuros que puedes tener preparados por nivel de espacio efectivo. Deja en blanco para no limitar ese nivel.</p>
+            <div className="gr-limits-grid">
+              {ALL_LEVELS.map(lvl => (
+                <label key={lvl} className="gr-limit-row">
+                  <span>Nivel {lvl}</span>
+                  <input
+                    type="text"
+                    inputMode="numeric"
+                    className="gr-feat-mod-input"
+                    placeholder="∞"
+                    value={limitesPreparados && limitesPreparados[lvl] !== undefined ? limitesPreparados[lvl] : ''}
+                    onChange={e => updateLimitePreparado(lvl, e.target.value)}
+                  />
+                </label>
+              ))}
+            </div>
+
+            <div className="gr-form-actions">
+              <button className="gr-btn-prepare" onClick={() => setShowSheet(false)}>Cerrar</button>
+            </div>
+          </div>
+        </div>
+      )}
+    </div>
   );
 }
 
 function EscuelaTag({ escuela }) {
-  const color = ESCUELA_COLORS[escuela] || '#9a9a8a';
   return (
-    <span className="gr-escuela-tag" style={{ '--esc-color': color }}>
+    <span className="gr-escuela-tag" style={{ '--esc-color': '#722f37' }}>
       {escuela}
     </span>
   );
@@ -639,12 +899,11 @@ function SchoolToggleRow({ schoolsOn, onToggle, escuelas }) {
     <div className="gr-school-row">
       {escuelas.map(esc => {
         const on = schoolsOn[esc] !== false;
-        const color = ESCUELA_COLORS[esc] || '#9a9a8a';
         return (
           <button
             key={esc}
             className={'gr-school-chip' + (on ? ' on' : ' off')}
-            style={{ '--esc-color': color }}
+            style={{ '--esc-color': '#722f37' }}
             onClick={() => onToggle(esc)}
           >
             {esc}
@@ -655,71 +914,117 @@ function SchoolToggleRow({ schoolsOn, onToggle, escuelas }) {
   );
 }
 
-function PreparadosView({ levelsOn, setLevelsOn, levelCounts, knownSpellsForLevels, openPrepareModal, preparedByEffectiveLevel, removePrepared, combinedFeats }) {
-  const toggleLevel = (lvl) => setLevelsOn(prev => ({ ...prev, [lvl]: !prev[lvl] }));
-  const effLevels = Object.keys(preparedByEffectiveLevel).map(Number).sort((a, b) => a - b);
+function PreparadosView({ preparedByEffectiveLevel, visiblePreparedByEffectiveLevel, removePrepared, deletePrepared, resetAllPrepared, limitesPreparados }) {
+  const [detailPrepared, setDetailPrepared] = useState(null);
+  const pressTimer = React.useRef(null);
+  const longPressFired = React.useRef(false);
 
-  const knownByLevel = {};
-  knownSpellsForLevels.forEach(spell => {
-    if (!knownByLevel[spell.nivel]) knownByLevel[spell.nivel] = [];
-    knownByLevel[spell.nivel].push(spell);
-  });
-  const knownLevelKeys = Object.keys(knownByLevel).map(Number).sort((a, b) => a - b);
+  const effLevels = Object.keys(visiblePreparedByEffectiveLevel).map(Number).sort((a, b) => a - b);
+  const totalPreparados = Object.values(preparedByEffectiveLevel).reduce((sum, list) => sum + list.length, 0);
+
+  const startPress = (p) => {
+    longPressFired.current = false;
+    pressTimer.current = setTimeout(() => {
+      longPressFired.current = true;
+      setDetailPrepared(p);
+    }, 500);
+  };
+  const cancelPress = () => {
+    if (pressTimer.current) clearTimeout(pressTimer.current);
+  };
+  const handleClick = (p) => {
+    if (longPressFired.current) {
+      longPressFired.current = false;
+      return;
+    }
+    removePrepared(p.id);
+  };
 
   return (
     <div className="gr-page">
-      <h2 className="gr-page-title">Libro de conjuros preparados</h2>
-      <p className="gr-page-desc">Elige qué conjuros conocidos quedan listos para lanzar hoy. Si aplicas metamagia, ocuparán un espacio de nivel superior.</p>
+      <div className="gr-catalog-head">
+        <div>
+          <h2 className="gr-page-title">Libro de conjuros preparados</h2>
+          <p className="gr-page-desc">Pulsa un conjuro preparado para ocultarlo tras lanzarlo, o mantén pulsado para ver sus detalles. Pulsa la ✕ para eliminarlo de la lista. Restablece todos para que vuelvan a mostrarse los ocultos.</p>
+        </div>
+        <button className="gr-btn-fab" onClick={resetAllPrepared} title="Restablecer todos los preparados">↺</button>
+      </div>
 
-      <div className="gr-prepare-columns">
-        <div className="gr-prepare-source">
-          <h3 className="gr-mini-title">Conocidos</h3>
-          <LevelToggleRow levelsOn={levelsOn} onToggle={toggleLevel} counts={levelCounts} />
-          <div className="gr-known-list">
-            {knownLevelKeys.length === 0 && <div className="gr-empty">No conoces conjuros de los niveles seleccionados.</div>}
-            {knownLevelKeys.map(lvl => (
-              <div key={lvl} className="gr-eff-level-block">
-                <div className="gr-eff-level-header">Nivel {lvl}</div>
-                {knownByLevel[lvl].map(spell => (
-                  <div key={spell.nombre} className="gr-known-row">
-                    <div>
-                      <strong>{spell.nombre}</strong>
-                      <EscuelaTag escuela={spell.escuela} />
+      {totalPreparados === 0 && <div className="gr-empty">Aún no has preparado ningún conjuro. Ve a «Conjuros conocidos» y pulsa «Preparar».</div>}
+
+      {effLevels.map(lvl => {
+        const limite = limitesPreparados ? limitesPreparados[lvl] : null;
+        const limiteNum = limite !== undefined && limite !== null && limite !== '' ? parseInt(limite, 10) : null;
+        const ocupados = (preparedByEffectiveLevel[lvl] || []).length;
+        return (
+          <div key={lvl} className="gr-eff-level-block">
+            <div className="gr-eff-level-header">
+              Nivel de espacio {lvl}
+              {!isNaN(limiteNum) && limiteNum !== null && <span className="gr-limit-badge"> · {ocupados}/{limiteNum}</span>}
+            </div>
+            {visiblePreparedByEffectiveLevel[lvl].map(p => (
+              <div
+                key={p.id}
+                className="gr-prepared-row clickable"
+                onClick={() => handleClick(p)}
+                onMouseDown={() => startPress(p)}
+                onMouseUp={cancelPress}
+                onMouseLeave={cancelPress}
+                onTouchStart={() => startPress(p)}
+                onTouchEnd={cancelPress}
+                role="button"
+                tabIndex={0}
+                title="Pulsa para ocultar, mantén pulsado para ver detalles"
+                onKeyDown={e => { if (e.key === 'Enter' || e.key === ' ') handleClick(p); }}
+              >
+                <div className="gr-prepared-info">
+                  <strong>{p.nombre}</strong>
+                  <span className="gr-prepared-base">base Nv.{p.nivelBase}</span>
+                  {p.dotesAplicadas && p.dotesAplicadas.length > 0 && (
+                    <div className="gr-prepared-feats">
+                      {p.dotesAplicadas.map(f => <span key={f} className="gr-feat-chip">{f}</span>)}
                     </div>
-                    <button className="gr-btn-prepare small" onClick={() => openPrepareModal(spell)}>
-                      Preparar
-                    </button>
-                  </div>
-                ))}
+                  )}
+                </div>
+                <span
+                  className="gr-prepared-x clickable-x"
+                  onClick={e => { e.stopPropagation(); cancelPress(); deletePrepared(p.id); }}
+                  role="button"
+                  tabIndex={0}
+                  title="Eliminar de la lista de preparados"
+                  onKeyDown={e => { if (e.key === 'Enter' || e.key === ' ') { e.stopPropagation(); deletePrepared(p.id); } }}
+                >✕</span>
               </div>
             ))}
           </div>
-        </div>
+        );
+      })}
 
-        <div className="gr-prepare-result">
-          <h3 className="gr-mini-title">Espacios ocupados hoy</h3>
-          {effLevels.length === 0 && <div className="gr-empty">Aún no has preparado ningún conjuro.</div>}
-          {effLevels.map(lvl => (
-            <div key={lvl} className="gr-eff-level-block">
-              <div className="gr-eff-level-header">Nivel de espacio {lvl}</div>
-              {preparedByEffectiveLevel[lvl].map(p => (
-                <div key={p.id} className="gr-prepared-row">
-                  <div className="gr-prepared-info">
-                    <strong>{p.nombre}</strong>
-                    <span className="gr-prepared-base">base Nv.{p.nivelBase}</span>
-                    {p.dotesAplicadas && p.dotesAplicadas.length > 0 && (
-                      <div className="gr-prepared-feats">
-                        {p.dotesAplicadas.map(f => <span key={f} className="gr-feat-chip">{f}</span>)}
-                      </div>
-                    )}
-                  </div>
-                  <button className="gr-btn-remove" onClick={() => removePrepared(p.id)}>Quitar</button>
+      {detailPrepared && (
+        <div className="gr-modal-overlay" onClick={() => setDetailPrepared(null)}>
+          <div className="gr-modal" onClick={() => setDetailPrepared(null)}>
+            <h3>{detailPrepared.nombre}</h3>
+            <p className="gr-modal-sub">Nivel base {detailPrepared.nivelBase} · Espacio de nivel {detailPrepared.effLevel}</p>
+            {detailPrepared.spell && detailPrepared.spell.resumen && (
+              <p className="gr-feat-desc">{detailPrepared.spell.resumen}</p>
+            )}
+            {detailPrepared.spell && (
+              <div className="gr-spell-meta">
+                <span>{detailPrepared.spell.escuela}{detailPrepared.spell.componentes ? ` · ${detailPrepared.spell.componentes}` : ''}</span>
+              </div>
+            )}
+            {detailPrepared.dotesAplicadas && detailPrepared.dotesAplicadas.length > 0 && (
+              <>
+                <h3 className="gr-mini-title" style={{ marginTop: '14px' }}>Dotes aplicadas</h3>
+                <div className="gr-prepared-feats">
+                  {detailPrepared.dotesAplicadas.map(f => <span key={f} className="gr-feat-chip">{f}</span>)}
                 </div>
-              ))}
-            </div>
-          ))}
+              </>
+            )}
+            <p className="gr-modal-sub" style={{ marginTop: '14px' }}>Toca en cualquier lugar para cerrar.</p>
+          </div>
         </div>
-      </div>
+      )}
     </div>
   );
 }
@@ -810,15 +1115,17 @@ function DotesView({ combinedFeats, dotesActivas, dotesTenidas, toggleDoteTenida
             >
               <div className="gr-feat-card-head">
                 <h3>{f.nombre}</h3>
-                <div className="gr-feat-mod-edit" onClick={e => e.stopPropagation()}>
-                  <span>Nv.</span>
-                  <input
-                    type="text"
-                    className="gr-feat-mod-input"
-                    value={dotesActivas[f.nombre] ?? f.modificador_nivel}
-                    onChange={e => updateFeatModifier(f.nombre, e.target.value)}
-                  />
-                </div>
+                {f.modificador_nivel !== undefined && f.modificador_nivel !== '-' && (
+                  <div className="gr-feat-mod-edit" onClick={e => e.stopPropagation()}>
+                    <span>Nv.</span>
+                    <input
+                      type="text"
+                      className="gr-feat-mod-input"
+                      value={dotesActivas[f.nombre] ?? f.modificador_nivel}
+                      onChange={e => updateFeatModifier(f.nombre, e.target.value)}
+                    />
+                  </div>
+                )}
               </div>
               <p className="gr-feat-desc">{f.descripcion}</p>
               <div className="gr-spell-meta">
@@ -907,7 +1214,7 @@ function CatalogoView({
       <div className="gr-catalog-head">
         <div>
           <h2 className="gr-page-title">Todos los conjuros</h2>
-          <p className="gr-page-desc">El catálogo completo de Mago y Hechicero. Pulsa una tarjeta para marcarla como conocida, usa «Editar» para modificarla (incluso conjuros oficiales), o añade una nueva con el botón +.</p>
+          <p className="gr-page-desc">El catálogo completo de conjuros. Pulsa una tarjeta para marcarla como conocida, usa «Editar» para modificarla (incluso conjuros oficiales), o añade una nueva con el botón +.</p>
         </div>
         <button className="gr-btn-fab" onClick={openForm} title="Añadir conjuro nuevo">+</button>
       </div>
@@ -1060,7 +1367,7 @@ function SwipeArea({ children, onSwipe, tabIndex, totalTabs }) {
 
 
 function MetamagicModal({ spell, feats, dotesActivas, dotesTenidas, selected, onToggle, onConfirm, onClose }) {
-  const metaFeats = feats.filter(f => f.modificador_nivel !== undefined && dotesTenidas && dotesTenidas[f.nombre]);
+  const metaFeats = feats.filter(f => f.modificador_nivel !== undefined && f.modificador_nivel !== '-' && dotesTenidas && dotesTenidas[f.nombre]);
   const totalMod = selected.reduce((sum, fname) => {
     const f = feats.find(ft => ft.nombre === fname);
     if (!f) return sum;
@@ -1152,31 +1459,70 @@ const STYLES = `
   letter-spacing: 0.02em;
 }
 
-.gr-sub-editable {
-  cursor: pointer;
-  display: inline-block;
-  text-decoration: underline;
-  text-decoration-color: rgba(154,100,24,0.45);
-  border-bottom: none;
-  transition: color 0.2s;
+.gr-sub-block {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
 }
 
-.gr-sub-editable:hover {
-  text-decoration-color: #9a6418;
-  color: #9a6418;
-}
-
-.gr-sub-input {
-  font-size: 17px;
-  font-family: 'Almendra', serif;
-  letter-spacing: 0.02em;
-  color: #3a2a10;
-  background: rgba(255,250,230,0.5);
+.gr-char-select {
+  align-self: flex-start;
+  background: rgba(255,250,230,0.4);
   border: none;
-  border-bottom: 1px solid #9a6418;
-  padding: 2px 4px;
+  border-bottom: 1px solid rgba(154,100,24,0.4);
+  color: #6b5230;
+  font-family: 'Almendra', serif;
+  font-size: 12.5px;
+  padding: 2px 2px;
   outline: none;
-  min-width: 240px;
+  cursor: pointer;
+}
+
+.gr-new-char-link {
+  align-self: flex-start;
+  background: none;
+  border: none;
+  color: #9a6418;
+  font-family: 'Almendra', serif;
+  font-size: 12.5px;
+  text-decoration: underline;
+  cursor: pointer;
+  padding: 0;
+}
+
+.gr-new-char-link:hover {
+  color: #8b0000;
+}
+
+.gr-emblem-btn {
+  background: none;
+  border: none;
+  color: #722f37;
+  line-height: 1;
+  cursor: pointer;
+  padding: 0;
+  vertical-align: middle;
+  display: inline-flex;
+  transition: color 0.2s, filter 0.2s, transform 0.2s;
+}
+
+.gr-emblem-btn svg {
+  display: block;
+}
+
+.gr-emblem-btn:hover {
+  color: #8b0000;
+  filter: drop-shadow(0 0 4px rgba(139,0,0,0.6));
+  transform: scale(1.15) rotate(15deg);
+}
+
+.gr-emblem-btn.unset {
+  color: #8b0000;
+  filter: drop-shadow(0 0 3px rgba(139,0,0,0.5));
+}
+
+.gr-emblem-btn.unset:hover {
+  filter: drop-shadow(0 0 6px rgba(139,0,0,0.7));
 }
 
 .gr-tabs {
@@ -1194,7 +1540,7 @@ const STYLES = `
   font-family: 'Almendra', serif;
   font-weight: 700;
   text-decoration: underline;
-  text-decoration-color: rgba(138,106,48,0.4);
+  text-decoration-color: rgba(138,106,48,0.6);
   font-size: 12px;
   letter-spacing: 0.03em;
   padding: 12px 6px;
@@ -1202,15 +1548,15 @@ const STYLES = `
   white-space: normal;
   line-height: 1.3;
   text-align: center;
-  transition: color 0.25s, text-shadow 0.25s;
+  transition: color 0.25s, text-shadow 0.25s, text-decoration-color 0.25s;
 }
 
 .gr-tab:hover { color: #b8821e; }
 
 .gr-tab.active {
-  color: #d2691e;
-  text-decoration-color: #d2691e;
-  text-shadow: 0 0 6px rgba(255,140,20,0.65), 0 0 14px rgba(255,90,0,0.4);
+  color: #8b0000;
+  text-decoration-color: #8b0000;
+  text-shadow: 0 0 6px rgba(139,0,0,0.65), 0 0 14px rgba(139,0,0,0.4);
 }
 
 @media (min-width: 560px) {
@@ -1274,27 +1620,28 @@ const STYLES = `
   font-family: 'Almendra', serif;
   font-weight: 700;
   text-decoration: underline;
-  text-decoration-color: rgba(154,122,64,0.4);
+  text-decoration-color: rgba(154,122,64,0.6);
   font-size: 17px;
   cursor: pointer;
-  transition: color 0.25s, text-shadow 0.25s, opacity 0.25s;
+  transition: color 0.25s, text-shadow 0.25s, opacity 0.25s, text-decoration-color 0.25s;
 }
 
 .gr-level-tab:hover { color: #b8821e; }
 
 .gr-level-tab.active {
-  color: #d2691e;
-  text-decoration-color: #d2691e;
-  text-shadow: 0 0 6px rgba(255,140,20,0.7), 0 0 16px rgba(255,90,0,0.45);
+  color: #8b0000;
+  text-decoration-color: #8b0000;
+  text-shadow: 0 0 6px rgba(139,0,0,0.7), 0 0 16px rgba(139,0,0,0.45);
 }
 
 .gr-level-tab.off {
-  opacity: 0.35;
-  filter: saturate(0.4);
+  opacity: 0.45;
+  filter: saturate(0.5);
+  text-decoration-color: rgba(154,122,64,0.6);
 }
 
 .gr-level-tab.off:hover {
-  opacity: 0.6;
+  opacity: 0.7;
 }
 
 .gr-level-count {
@@ -1367,7 +1714,7 @@ const STYLES = `
 
 .gr-input:focus, .gr-select:focus {
   outline: none;
-  border-bottom-color: #d2691e;
+  border-bottom-color: #8b0000;
 }
 
 .gr-input { flex: 1; min-width: 180px; }
@@ -1392,9 +1739,9 @@ const STYLES = `
 }
 
 .gr-sort-toggle button.active {
-  color: #d2691e;
-  text-decoration-color: #d2691e;
-  text-shadow: 0 0 6px rgba(255,140,20,0.6);
+  color: #8b0000;
+  text-decoration-color: #8b0000;
+  text-shadow: 0 0 6px rgba(139,0,0,0.6);
 }
 
 .gr-checkbox-label {
@@ -1420,10 +1767,10 @@ const STYLES = `
   border: none;
   border-bottom: 1px solid rgba(120,80,30,0.25);
   border-radius: 0;
-  padding: 14px 4px 16px;
+  padding: 8px 4px 10px;
   display: flex;
   flex-direction: column;
-  gap: 8px;
+  gap: 3px;
 }
 
 .gr-spell-card.known {
@@ -1443,7 +1790,7 @@ const STYLES = `
   font-size: 15px;
   color: #3a2a10;
   margin: 0;
-  line-height: 1.3;
+  line-height: 1.15;
 }
 
 .gr-spell-level {
@@ -1459,12 +1806,14 @@ const STYLES = `
   font-style: italic;
   width: fit-content;
   letter-spacing: 0.02em;
+  line-height: 1.1;
+  margin: 0;
 }
 
 .gr-spell-summary {
   font-size: 13.5px;
   color: #4a3a22;
-  line-height: 1.45;
+  line-height: 1.25;
   margin: 0;
   flex: 1;
 }
@@ -1473,6 +1822,7 @@ const STYLES = `
   font-size: 11.5px;
   color: #8a7250;
   font-style: italic;
+  line-height: 1.1;
 }
 
 .gr-spell-actions {
@@ -1496,9 +1846,9 @@ const STYLES = `
 }
 
 .gr-btn-toggle.on {
-  color: #d2691e;
-  text-decoration-color: #d2691e;
-  text-shadow: 0 0 6px rgba(255,140,20,0.55);
+  color: #8b0000;
+  text-decoration-color: #8b0000;
+  text-shadow: 0 0 6px rgba(139,0,0,0.55);
 }
 
 .gr-btn-prepare {
@@ -1516,8 +1866,8 @@ const STYLES = `
 }
 
 .gr-btn-prepare:hover {
-  color: #d2691e;
-  text-shadow: 0 0 8px rgba(255,120,10,0.6), 0 0 18px rgba(255,60,0,0.35);
+  color: #8b0000;
+  text-shadow: 0 0 8px rgba(139,0,0,0.6), 0 0 18px rgba(139,0,0,0.35);
 }
 
 .gr-btn-prepare.small { font-size: 12px; }
@@ -1552,11 +1902,11 @@ const STYLES = `
 }
 
 .gr-spell-card.clickable:hover {
-  border-bottom-color: #d2691e;
+  border-bottom-color: #8b0000;
 }
 
 .gr-spell-card.clickable:focus-visible {
-  outline: 1px dotted #d2691e;
+  outline: 1px dotted #8b0000;
   outline-offset: 2px;
 }
 
@@ -1572,9 +1922,9 @@ const STYLES = `
 }
 
 .gr-known-pill.on {
-  color: #d2691e;
-  text-decoration-color: #d2691e;
-  text-shadow: 0 0 6px rgba(255,140,20,0.55);
+  color: #8b0000;
+  text-decoration-color: #8b0000;
+  text-shadow: 0 0 6px rgba(139,0,0,0.55);
 }
 
 .gr-btn-edit {
@@ -1633,6 +1983,89 @@ const STYLES = `
   margin-bottom: 4px;
 }
 
+.gr-prepared-row.clickable {
+  cursor: pointer;
+  transition: opacity 0.15s, border-color 0.15s;
+  user-select: none;
+  -webkit-touch-callout: none;
+}
+
+.gr-prepared-row.clickable:hover {
+  opacity: 0.7;
+  border-bottom-color: #8b0000;
+}
+
+.gr-prepared-row.clickable:focus-visible {
+  outline: 1px dotted #8b0000;
+  outline-offset: 2px;
+}
+
+.gr-prepared-x {
+  color: #8b0000;
+  font-size: 14px;
+  opacity: 0.55;
+  margin-left: 10px;
+  flex-shrink: 0;
+  cursor: pointer;
+  padding: 4px;
+  transition: opacity 0.15s, transform 0.15s;
+}
+
+.gr-prepared-x:hover {
+  opacity: 1;
+  transform: scale(1.2);
+}
+
+.gr-limit-badge {
+  font-size: 12px;
+  color: #9a6418;
+  font-weight: normal;
+  letter-spacing: 0;
+}
+
+.gr-sheet-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(140px, 1fr));
+  gap: 12px;
+  margin-bottom: 14px;
+}
+
+.gr-sheet-grid-2 {
+  grid-template-columns: 1fr 1fr;
+}
+
+.gr-sheet-field {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  font-size: 12.5px;
+  color: #6b5230;
+  min-width: 0;
+}
+
+.gr-sheet-field .gr-input,
+.gr-sheet-field .gr-select {
+  min-width: 0;
+  width: 100%;
+  box-sizing: border-box;
+}
+
+.gr-limits-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(110px, 1fr));
+  gap: 12px;
+  margin-bottom: 16px;
+}
+
+.gr-limit-row {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 8px;
+  font-size: 13.5px;
+  color: #3a2a10;
+}
+
 .gr-prepared-info strong { color: #3a2a10; font-size: 14px; }
 .gr-prepared-base { font-size: 11px; color: #8a7250; margin-left: 8px; }
 
@@ -1656,7 +2089,7 @@ const STYLES = `
   background: linear-gradient(160deg, rgba(255,250,235,0.35), rgba(232,210,170,0.25));
   border: none;
   border-bottom: 1px solid rgba(120,80,30,0.25);
-  padding: 14px 4px 16px;
+  padding: 8px 4px 10px;
 }
 
 .gr-feat-card.clickable {
@@ -1664,11 +2097,11 @@ const STYLES = `
 }
 
 .gr-feat-card.clickable:hover {
-  border-bottom-color: #d2691e;
+  border-bottom-color: #8b0000;
 }
 
 .gr-feat-card.clickable:focus-visible {
-  outline: 1px dotted #d2691e;
+  outline: 1px dotted #8b0000;
   outline-offset: 2px;
 }
 
@@ -1680,7 +2113,7 @@ const STYLES = `
   display: flex;
   justify-content: space-between;
   align-items: center;
-  margin-bottom: 8px;
+  margin-bottom: 4px;
 }
 
 .gr-feat-card-head h3 {
@@ -1714,8 +2147,8 @@ const STYLES = `
 .gr-feat-desc {
   font-size: 13px;
   color: #4a3a22;
-  line-height: 1.45;
-  margin: 0 0 8px;
+  line-height: 1.25;
+  margin: 0 0 5px;
 }
 
 .gr-btn-add-new {
@@ -1734,8 +2167,8 @@ const STYLES = `
 }
 
 .gr-btn-add-new:hover {
-  color: #d2691e;
-  text-shadow: 0 0 8px rgba(255,120,10,0.5);
+  color: #8b0000;
+  text-shadow: 0 0 8px rgba(139,0,0,0.5);
 }
 
 .gr-add-form {
@@ -1796,8 +2229,8 @@ const STYLES = `
 }
 
 .gr-btn-fab:hover {
-  color: #d2691e;
-  text-shadow: 0 0 10px rgba(255,120,10,0.6), 0 0 20px rgba(255,60,0,0.35);
+  color: #8b0000;
+  text-shadow: 0 0 10px rgba(139,0,0,0.6), 0 0 20px rgba(139,0,0,0.35);
   transform: scale(1.15);
 }
 
@@ -1855,11 +2288,11 @@ const STYLES = `
 }
 
 .gr-modal-feat-row.active {
-  color: #d2691e;
+  color: #8b0000;
 }
 
 .gr-modal-feat-name { flex: 1; color: #3a2a10; }
-.gr-modal-feat-row.active .gr-modal-feat-name { color: #d2691e; text-shadow: 0 0 6px rgba(255,140,20,0.5); }
+.gr-modal-feat-row.active .gr-modal-feat-name { color: #8b0000; text-shadow: 0 0 6px rgba(139,0,0,0.5); }
 .gr-modal-feat-mod { color: #9a6418; font-family: 'Almendra', serif; font-size: 12px; }
 
 .gr-modal-result {
